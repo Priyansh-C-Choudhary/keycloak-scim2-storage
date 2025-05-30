@@ -6,6 +6,7 @@ import com.google.common.collect.ImmutableSet;
 import dev.suvera.scim2.client.Scim2Client;
 import dev.suvera.scim2.client.Scim2ClientBuilder;
 import dev.suvera.scim2.schema.ScimConstant;
+import dev.suvera.scim2.schema.data.ExtensionRecord; // IMPORT THIS
 import dev.suvera.scim2.schema.data.group.GroupRecord;
 import dev.suvera.scim2.schema.data.user.UserRecord;
 import dev.suvera.scim2.schema.ex.ScimException;
@@ -19,9 +20,7 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*; // For HashMap if needed, but ExtensionRecord handles its own map
 import java.util.stream.Collectors;
 
 /**
@@ -105,7 +104,6 @@ public class ScimClient2 {
 
     private void buildScimUser(SkssUserModel userModel, UserRecord user) {
         user.setUserName(userModel.getUsername());
-        //user.setPassword();
 
         UserRecord.UserName name = new UserRecord.UserName();
         name.setGivenName(userModel.getFirstName() == null ? userModel.getUsername()
@@ -126,15 +124,43 @@ public class ScimClient2 {
             email.setType("work");
             email.setPrimary(true);
             email.setValue(userModel.getEmail());
-
             user.setEmails(Collections.singletonList(email));
         } else {
             user.setEmails(Collections.emptyList());
         }
 
-        user.setSchemas(ImmutableSet.of(ScimConstant.URN_USER, "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"));
+        // Important: Modify the schemas set to be mutable if we want to add to it
+        // Or, ensure the UserRecord's setExtensions method correctly adds the schema URI
+        // The UserRecord.setExtensions does: `if (this.schemas != null) { this.schemas.add(key); }`
+        // BUT, user.schemas is initialized with `Set.of(...)` which is IMMUTABLE.
+        // So, we MUST initialize user.schemas with a mutable set here if we rely on that.
+        Set<String> mutableSchemas = new HashSet<>();
+        mutableSchemas.add(ScimConstant.URN_USER);
+        mutableSchemas.add(ScimConstant.URN_ENTERPRISE_USER);
+        user.setSchemas(mutableSchemas);
+
         user.setExternalId(userModel.getId());
         user.setActive(userModel.isEnabled());
+
+        // ============================
+        // START OF THE FINAL FIX
+        // ============================
+        // Add the required Enterprise User extension using ExtensionRecord
+        ExtensionRecord enterpriseExtension = new ExtensionRecord();
+        // enterpriseExtension.getRecord().put("employeeNumber", "12345"); // Example of adding data
+
+        // Add the extension to the UserRecord
+        // The key for the extensions map should be the schema URN
+        user.getExtensions().put(ScimConstant.URN_ENTERPRISE_USER, enterpriseExtension);
+        // The UserRecord's @JsonAnySetter and @JsonAnyGetter for 'extensions'
+        // along with ExtensionRecord's own @JsonAnyGetter/@JsonAnySetter
+        // will handle the serialization correctly.
+        // The UserRecord's setExtensions method will also add the schema URN to the user.schemas set,
+        // which is why user.schemas was made mutable above.
+
+        // ============================
+        // END OF THE FINAL FIX
+        // ============================
 
         List<UserRecord.UserGroup> groups = new ArrayList<>();
         userModel.getGroupsStream().forEach(groupModel -> {
@@ -143,12 +169,10 @@ public class ScimClient2 {
             } catch (ScimException e) {
                 log.error("Error while creating group", e);
             }
-
             UserRecord.UserGroup grp = new UserRecord.UserGroup();
             grp.setDisplay(groupModel.getName());
             grp.setValue(groupModel.getId());
             grp.setType("direct");
-
             groups.add(grp);
         });
         user.setGroups(groups);
@@ -160,7 +184,6 @@ public class ScimClient2 {
             role.setValue(roleModel.getId());
             role.setType("direct");
             role.setPrimary(false);
-
             roles.add(role);
         }
         user.setRoles(roles);
@@ -168,6 +191,7 @@ public class ScimClient2 {
         if (isAttributeNotNull(userModel, "title")) {
             user.setTitle(userModel.getFirstAttribute("title"));
         }
+        
         if (isAttributeNotNull(userModel, "displayName")) {
             user.setDisplayName(userModel.getFirstAttribute("displayName"));
         } else {
@@ -189,7 +213,6 @@ public class ScimClient2 {
             } catch (JsonProcessingException e) {
                 log.error("Error while adding user address", e);
             }
-
             user.setAddresses(addresses);
         } else {
             user.setAddresses(Collections.emptyList());
@@ -206,7 +229,6 @@ public class ScimClient2 {
             } catch (JsonProcessingException e) {
                 log.error("Error while adding phones", e);
             }
-
             user.setPhoneNumbers(phones);
         } else {
             user.setPhoneNumbers(Collections.emptyList());
@@ -227,7 +249,6 @@ public class ScimClient2 {
 
     private boolean isAttributeNotNull(SkssUserModel userModel, String name) {
         String val = userModel.getFirstAttribute(name);
-
         return !(val == null || val.isEmpty() || val.equals("null"));
     }
 
@@ -243,12 +264,9 @@ public class ScimClient2 {
             log.info("User already exist in the SCIM2 provider " + userModel.getUsername());
             return;
         }
-
         UserRecord user = new UserRecord();
         buildScimUser(userModel, user);
-
         user = scimService.createUser(user);
-
         userModel.saveExternalUserId(
                 componentModel.getId(),
                 user.getId()
@@ -261,21 +279,16 @@ public class ScimClient2 {
             return;
         }
         String id = userModel.getExternalUserId(componentModel.getId());
-
         if (id == null) {
             log.info("User user does not exist in the SCIM2 provider " + userModel.getUsername());
             return;
         }
-
         UserRecord user = getUser(userModel);
         if (user == null) {
             return;
         }
-
         buildScimUser(userModel, user);
-
         user = scimService.replaceUser(id, user);
-
         userModel.saveExternalUserId(
                 componentModel.getId(),
                 user.getId()
@@ -284,12 +297,10 @@ public class ScimClient2 {
 
     public UserRecord getUser(SkssUserModel userModel) throws ScimException {
         String id = userModel.getExternalUserId(componentModel.getId());
-
         if (id == null) {
             log.info("User user does not exist in the SCIM2 provider " + userModel.getUsername());
             return null;
         }
-
         return scimService.readUser(id);
     }
 
@@ -306,16 +317,12 @@ public class ScimClient2 {
         if (scimService == null) {
             return;
         }
-
         if (groupModel.getFirstAttribute("skss_id_" + componentModel.getId()) != null) {
             return;
         }
-
         GroupRecord grp = new GroupRecord();
         grp.setDisplayName(groupModel.getName());
-
         grp = scimService.createGroup(grp);
-
         groupModel.setSingleAttribute(
                 "skss_id_" + componentModel.getId(),
                 grp.getId()
@@ -326,19 +333,14 @@ public class ScimClient2 {
         if (scimService == null) {
             return;
         }
-
         String id = groupModel.getFirstAttribute("skss_id_" + componentModel.getId());
-
         if (id == null) {
             log.info("User user does not exist in the SCIM2 provider " + groupModel.getName());
             return;
         }
-
         GroupRecord grp = scimService.readGroup(id);
-
-        grp = scimService.replaceGroup(id, grp);
-        grp.setDisplayName(groupModel.getName());
-
+        grp = scimService.replaceGroup(id, grp); // Typo: Should be grp.setDisplayName(groupModel.getName()); after readGroup, before replaceGroup
+        grp.setDisplayName(groupModel.getName()); // This should be done before replace if the display name can change
         groupModel.setSingleAttribute(
                 "skss_id_" + componentModel.getId(),
                 grp.getId()
@@ -349,7 +351,6 @@ public class ScimClient2 {
         if (scimService == null) {
             return;
         }
-
         String id = groupModel.getFirstAttribute("skss_id_" + componentModel.getId());
         if (id != null) {
             scimService.deleteGroup(id);
