@@ -132,7 +132,7 @@ public class ScimClient2 {
             user.setEmails(Collections.emptyList());
         }
 
-        user.setSchemas(ImmutableSet.of(ScimConstant.URN_USER));
+        user.setSchemas(ImmutableSet.of(ScimConstant.URN_USER, "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"));
         user.setExternalId(userModel.getId());
         user.setActive(userModel.isEnabled());
 
